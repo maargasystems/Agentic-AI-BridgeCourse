@@ -1,0 +1,52 @@
+{
+  "session_summary": {
+    "date": "2026-08-10",
+    "activities": [
+      {
+        "action": "commit",
+        "hash": "ed67bdf",
+        "description": "Added conversation_history/chatbot.ipynb (chatbot notebook with conversation history example)",
+        "pushed_to": "origin/main"
+      },
+      {
+        "action": "create",
+        "file": "metrics.json",
+        "description": "Created empty metrics.json placeholder at repo root"
+      }
+    ]
+  },
+  "repo_files": [
+    ".gitignore",
+    ".python-version",
+    "LCEL/app.py",
+    "LCEL/client.py",
+    "LCEL/simplellmlcel.ipynb",
+    "LangChainBasics/data_ingestion/attention.pdf",
+    "LangChainBasics/data_ingestion/dataingestion.ipynb",
+    "LangChainBasics/data_ingestion/records.xml",
+    "LangChainBasics/data_ingestion/speech.txt",
+    "LangChainBasics/data_transformer/attention.pdf",
+    "LangChainBasics/data_transformer/charactertextsplitter.ipynb",
+    "LangChainBasics/data_transformer/htmltextsplitter.ipynb",
+    "LangChainBasics/data_transformer/recursivecharactertextsplitter.ipynb",
+    "LangChainBasics/data_transformer/recursivejsonsplitter.ipynb",
+    "LangChainBasics/data_transformer/speech.txt",
+    "LangChainBasics/embeddings/embedding.ipynb",
+    "LangChainBasics/embeddings/huggingface.ipynb",
+    "LangChainBasics/embeddings/speech.txt",
+    "LangChainBasics/ollama/app.py",
+    "LangChainBasics/ollama/genaiapp.ipynb",
+    "LangChainBasics/openai/basics.ipynb",
+    "LangChainBasics/openai/genaiapp.ipynb",
+    "LangChainBasics/vectorstore/chroma.ipynb",
+    "LangChainBasics/vectorstore/faiss.ipynb",
+    "LangChainBasics/vectorstore/speech.txt",
+    "README.md",
+    "conversation_history/chatbot.ipynb",
+    "main.py",
+    "metrics.json",
+    "pydantic.ipynb",
+    "pyproject.toml",
+    "uv.lock"
+  ]
+}
