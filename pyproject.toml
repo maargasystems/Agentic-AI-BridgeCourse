@@ -25,6 +25,9 @@ dependencies = [
     "wikipedia>=1.4.0",
     "chromadb>=1.5.9",
     "langchain-chroma>=1.1.0",
+    "fastapi>=0.141.1",
+    "langserve>=0.3.3",
+    "sse-starlette>=3.4.8",
 ]
 
 [tool.uv]
