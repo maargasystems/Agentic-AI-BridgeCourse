@@ -1,14 +1,15 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), and conversational memory.
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, and LangChain v1 agents/tools/middleware.
 
 ## Tech Stack
 
 - **Language / runtime**: Python 3.12
 - **Package management**: [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`)
 - **Data validation**: [Pydantic](https://docs.pydantic.dev/) v2
-- **LLM orchestration**: [LangChain](https://python.langchain.com/) (`langchain`, `langchain-classic`, `langchain-community`, `langchain-core`)
-- **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` (models: `gpt-oss-120b`, `gpt-oss-20b`, `llama-3.1-8b-instant`)
+- **LLM orchestration**: [LangChain](https://python.langchain.com/) v1 (`langchain`, `langchain-classic`, `langchain-community`, `langchain-core`) — including `create_agent`, `langchain.agents.middleware`, and the `@tool` decorator
+- **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) (used under the hood by `create_agent`/middleware for interrupts, checkpointing (`InMemorySaver`), and human-in-the-loop resumption)
+- **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` / `init_chat_model` (models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama-3.1-8b-instant`, `qwen/qwen3.6-27b`)
 - **Observability / tracing**: [LangSmith](https://www.langchain.com/langsmith) via `langsmith`
 - **Embeddings**: `langchain-huggingface` + `sentence-transformers` (`BAAI/bge-small-en-v1.5`, `BAAI/bge-large-en-v1.5`)
 - **Vector stores**: [FAISS](https://faiss.ai/) (`faiss-cpu`) and [Chroma](https://www.trychroma.com/) (`chromadb`, `langchain-chroma`)
@@ -55,6 +56,13 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   └── vectorstore/
 │       ├── faiss.ipynb            # FAISS vector store usage & retrievers
 │       └── chroma.ipynb           # Chroma vector store usage & retrievers
+├── langchainupdated/               # LangChain v1 agents, messages, tools, middleware
+│   ├── lanchainintro.ipynb        # create_agent quickstart (weatherman tool-calling agent)
+│   ├── messages.ipynb             # Unified message model (System/Human/AI/Tool)
+│   ├── middleware.ipynb           # SummarizationMiddleware & HumanInTheLoopMiddleware
+│   ├── modelintegration.ipynb     # Groq model integration, streaming, batching
+│   ├── structuredoutput.ipynb     # with_structured_output (Pydantic/TypedDict/dataclass)
+│   └── tools.ipynb                # @tool decorator, bind_tools, manual tool-call loop
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
 ├── analysis.md                    # Standalone repo analysis notes
 └── metrics.json                   # Session activity log
@@ -127,6 +135,45 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - Building a stateful chatbot: wrapping a `ChatGroq` model with `ChatMessageHistory` / `RunnableWithMessageHistory` to make it remember prior turns per `session_id`.
 - Using `MessagesPlaceholder` in a `ChatPromptTemplate` to inject conversation history alongside a `language` variable for multilingual responses.
 - **Managing conversation history**: using `trim_messages` to cap how many tokens/messages are sent to the model (keeping the system message, controlling partial-message handling) so history doesn't grow unbounded and overflow the context window.
+
+## `langchainupdated/` — LangChain v1 Agents, Messages, Middleware & Model Integration (Groq)
+
+### `lanchainintro.ipynb`
+- Pinned LangChain v1 (`langchain.__version__` = `1.3.14`) and configured Groq + LangSmith tracing via environment variables (`GROQ_API_KEY`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, `LANGCHAIN_TRACING_V2`).
+- Built a weatherman agent with `create_agent` from `langchain.agents`, using `ChatGroq(model="openai/gpt-oss-20b")` and a custom `get_weather(city)` Python function as a tool, plus a `system_prompt`.
+- Invoked the agent with both structured (`{"messages":[{"role":"user", ...}]}`) and shorthand (`{"messages": "..."}`) input formats.
+- Demonstrated the full ReAct-style loop: `HumanMessage` → `AIMessage` with `tool_calls` → `ToolMessage` result → final `AIMessage` answer, inspecting `response["messages"]`.
+
+### `messages.ipynb`
+- Introduced LangChain's unified message model (System/Human/AI/Tool) and used `init_chat_model(model="groq:openai/gpt-oss-120b")` for provider-agnostic model construction.
+- Compared text-prompt `.invoke("string")` calls versus message-list prompts built from `SystemMessage`, `HumanMessage`, `AIMessage`, `ToolMessage` (`langchain.messages` / `langchain_core.messages`).
+- Showed priming model behavior with a `SystemMessage` (e.g., "act as a senior python developer") and attaching `name`/`id` metadata to a `HumanMessage`.
+- Manually constructed conversation history by inserting a pre-made `AIMessage` into a message list to simulate multi-turn context.
+- Demonstrated manual tool-call round-tripping by constructing an `AIMessage` with a `tool_calls` payload and a matching `ToolMessage(tool_call_id=...)`, then feeding both back into `model.invoke(...)`.
+
+### `middleware.ipynb`
+- Covered `langchain.agents.middleware` classes on top of `create_agent(model="groq:openai/gpt-oss-120b", ...)`.
+- `SummarizationMiddleware`: compresses conversation history using `trigger`/`keep` thresholds expressed as message count (`("messages", 10)`/`("messages", 4)`), token count (`("tokens", 400)`/`("tokens", 100)`), and context-window fraction (`("fraction", 0.005)`/`("fraction", 0.002)`), tested across multi-turn arithmetic Q&A and a `search_hotel`/`search_hotels` `@tool` across multiple cities, using `InMemorySaver` (from `langgraph.checkpoint.memory`) for thread-scoped state (`thread_id` in config).
+- `HumanInTheLoopMiddleware`: gated a `send_email_tool` (mock) behind human approval via `interrupt_on={"send_email_tool": {"allowed_decisions": [...]}, "read_email_tool": False}`, while leaving `read_email_tool` un-interrupted.
+- Demonstrated all three human decisions using `langgraph.types.Command(resume={"decisions": [...]})`: `approve`, `reject` (tool call cancelled, agent asks user how to proceed), and `edit` (human rewrites `recipient`/`subject`/`body` before the tool actually executes).
+- Illustrated LangGraph's `__interrupt__` mechanism for pausing/resuming agent execution mid-run.
+
+### `modelintegration.ipynb`
+- Focused on connecting to Groq-hosted models via two equivalent paths: `init_chat_model(model="groq:openai/gpt-oss-20b")` and `ChatGroq(model=...)` directly (`from langchain_groq.chat_models import ChatGroq`), also trying `qwen/qwen3.6-27b`.
+- Inspected model metadata via `model.profile` (context window, input/output token limits, modality support, tool-calling/structured-output/reasoning flags).
+- Used `.invoke()` for single calls and `.stream()` for token-by-token streaming (printing `chunk.text`), observing visible `<think>...</think>` reasoning traces from the Qwen model.
+- Used `.batch()` for parallel prompt execution, including a `config={"max_concurrency": 3}` example across multiple unrelated questions.
+
+### `structuredoutput.ipynb`
+- Demonstrated `model.with_structured_output(...)` on `ChatGroq`/`init_chat_model("groq:openai/gpt-oss-120b")` across three schema styles: Pydantic `BaseModel` (`Movie`, nested `MovieDetails`/`Actor`), `typing_extensions.TypedDict` (`MovieDict`, nested `MovieDetails`), and Python `@dataclass` (`ContactInfo`).
+- Showed `include_raw=True` to get both the raw `AIMessage` (with tool-call args) and the `parsed` Pydantic object plus `parsing_error` in one call.
+- Illustrated nested/list fields (`cast: list[Actor]`, `genres: list[str]`, optional `budget: float | None`) being correctly populated by the model.
+- Used `create_agent(model="groq:openai/gpt-oss-120b", response_format=ContactInfo)` to get a `structured_response` key on the agent's invoke result for Pydantic, TypedDict, and dataclass response formats alike, extracting contact info (name/email/phone) from free text.
+
+### `tools.ipynb`
+- Defined a tool with the `@tool` decorator from `langchain.tools` (`get_weather(city:str)->str`) and bound it to `init_chat_model(model="groq:openai/gpt-oss-120b")` via `model.bind_tools([...])`.
+- Inspected the resulting `AIMessage.tool_calls` list (name, args, id) produced when the model decides to call the tool.
+- Walked through a manual tool-execution loop: append the model's tool-call `AIMessage` to the message list, call `get_weather.invoke(tool_call)` to produce a `ToolMessage`, append it, then call `model_with_tool.invoke(messages)` again to get the final natural-language answer via `.text`.
 
 ## Supporting Files
 
