@@ -1,6 +1,6 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, and LangChain v1 agents/tools/middleware.
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, and LangGraph state graphs/chatbots/tool-calling agents.
 
 ## Tech Stack
 
@@ -8,12 +8,12 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - **Package management**: [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`)
 - **Data validation**: [Pydantic](https://docs.pydantic.dev/) v2
 - **LLM orchestration**: [LangChain](https://python.langchain.com/) v1 (`langchain`, `langchain-classic`, `langchain-community`, `langchain-core`) — including `create_agent`, `langchain.agents.middleware`, and the `@tool` decorator
-- **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) (used under the hood by `create_agent`/middleware for interrupts, checkpointing (`InMemorySaver`), and human-in-the-loop resumption)
+- **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) — used both directly (`StateGraph`, `add_messages` reducer, `ToolNode`/`tools_condition` prebuilts, `TypedDict`/dataclass/Pydantic state schemas) and under the hood by `create_agent`/middleware for interrupts, checkpointing (`InMemorySaver`), and human-in-the-loop resumption
 - **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` / `init_chat_model` (models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama-3.1-8b-instant`, `qwen/qwen3.6-27b`)
 - **Observability / tracing**: [LangSmith](https://www.langchain.com/langsmith) via `langsmith`
 - **Embeddings**: `langchain-huggingface` + `sentence-transformers` (`BAAI/bge-small-en-v1.5`, `BAAI/bge-large-en-v1.5`)
 - **Vector stores**: [FAISS](https://faiss.ai/) (`faiss-cpu`) and [Chroma](https://www.trychroma.com/) (`chromadb`, `langchain-chroma`)
-- **Document loading**: `pypdf`, `pymupdf` (PDF), `beautifulsoup4` (web/HTML), `arxiv`, `wikipedia`
+- **Document loading / search tools**: `pypdf`, `pymupdf` (PDF), `beautifulsoup4` (web/HTML), `arxiv`, `wikipedia`, and [Tavily](https://tavily.com/) (`TAVILY_API_KEY`) for web search via `langchain_community.tools.tavily_search`
 - **Serving / APIs**: [FastAPI](https://fastapi.tiangolo.com/), [LangServe](https://python.langchain.com/docs/langserve/), `uvicorn`, `sse-starlette`
 - **UI**: [Streamlit](https://streamlit.io/)
 - **Environment config**: `python-dotenv` (secrets kept in a git-ignored `.env`)
@@ -56,13 +56,20 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   └── vectorstore/
 │       ├── faiss.ipynb            # FAISS vector store usage & retrievers
 │       └── chroma.ipynb           # Chroma vector store usage & retrievers
-├── langchainupdated/               # LangChain v1 agents, messages, tools, middleware
+├── LangChain/                      # LangChain v1 agents, messages, tools, middleware
 │   ├── lanchainintro.ipynb        # create_agent quickstart (weatherman tool-calling agent)
 │   ├── messages.ipynb             # Unified message model (System/Human/AI/Tool)
 │   ├── middleware.ipynb           # SummarizationMiddleware & HumanInTheLoopMiddleware
 │   ├── modelintegration.ipynb     # Groq model integration, streaming, batching
 │   ├── structuredoutput.ipynb     # with_structured_output (Pydantic/TypedDict/dataclass)
 │   └── tools.ipynb                # @tool decorator, bind_tools, manual tool-call loop
+├── LangGraph/                      # LangGraph state graphs, chatbots, tool-calling agents
+│   ├── simplegraph.ipynb          # StateGraph basics: nodes, conditional edges, compile/invoke
+│   ├── chainslanggraph.ipynb      # Messages as state, add_messages reducer, bind_tools, ToolNode/tools_condition
+│   ├── chatbot.ipynb              # Minimal single-node chatbot graph backed by ChatGroq
+│   ├── chatbotwithmultipletools.ipynb # Chatbot wired to Arxiv, Wikipedia & Tavily search tools
+│   ├── dataclassstateschema.ipynb # State schemas via TypedDict vs. Python @dataclass
+│   └── pydantic.ipynb             # State schema validation via a Pydantic BaseModel
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
 ├── analysis.md                    # Standalone repo analysis notes
 └── metrics.json                   # Session activity log
@@ -136,7 +143,7 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - Using `MessagesPlaceholder` in a `ChatPromptTemplate` to inject conversation history alongside a `language` variable for multilingual responses.
 - **Managing conversation history**: using `trim_messages` to cap how many tokens/messages are sent to the model (keeping the system message, controlling partial-message handling) so history doesn't grow unbounded and overflow the context window.
 
-## `langchainupdated/` — LangChain v1 Agents, Messages, Middleware & Model Integration (Groq)
+## `LangChain/` — LangChain v1 Agents, Messages, Middleware & Model Integration (Groq)
 
 ### `lanchainintro.ipynb`
 - Pinned LangChain v1 (`langchain.__version__` = `1.3.14`) and configured Groq + LangSmith tracing via environment variables (`GROQ_API_KEY`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, `LANGCHAIN_TRACING_V2`).
@@ -175,6 +182,35 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - Inspected the resulting `AIMessage.tool_calls` list (name, args, id) produced when the model decides to call the tool.
 - Walked through a manual tool-execution loop: append the model's tool-call `AIMessage` to the message list, call `get_weather.invoke(tool_call)` to produce a `ToolMessage`, append it, then call `model_with_tool.invoke(messages)` again to get the final natural-language answer via `.text`.
 
+## `LangGraph/` — State Graphs, Chatbots & Tool-Calling Agents
+
+### `simplegraph.ipynb`
+- Defined a `State` as a `TypedDict` and built plain-Python node functions (`start_play`, `cricket`, `badminton`) that read/return state keys.
+- Used a conditional-edge routing function (`random_play`, returning a `Literal["cricket", "badminton"]`) to branch the graph at random via `add_conditional_edges`.
+- Assembled the graph with `StateGraph`, `START`/`END`, `add_node`/`add_edge`, compiled it, rendered it as a Mermaid diagram (`draw_mermaid_png`), and ran it with `graph.invoke(...)`.
+
+### `chainslanggraph.ipynb`
+- Modeled conversation state as a list of LangChain messages (`HumanMessage`/`AIMessage`/`ToolMessage`) and introduced the **reducer** concept: without one, a node's return value overwrites the state key; with the prebuilt `add_messages` reducer (via `Annotated[list[AnyMessage], add_messages]`), new messages are appended instead.
+- Bound a simple `add(a, b)` Python tool to `ChatGroq(model="qwen/qwen3.6-27b")` via `bind_tools([add])` and inspected the resulting `AIMessage.tool_calls`.
+- Built a one-node graph (`llm_tool`) that calls the tool-bound model, then upgraded it to a full tool-calling loop using the prebuilt `ToolNode` and `tools_condition` (from `langgraph.prebuilt`) to route between the LLM node and tool execution.
+
+### `chatbot.ipynb`
+- Minimal chatbot graph: a `State` with an `add_messages`-annotated `messages` key and a single `chatbot` node (`superbot`) that calls `ChatGroq(model="llama-3.1-8b-instant")` on the running message history.
+- Compiled with just `START → chatbot → END` (no tools) and invoked it with a `("user", "...")` tuple message.
+
+### `chatbotwithmultipletools.ipynb`
+- Wired up three external tools: `ArxivQueryRun` (via `ArxivAPIWrapper`), `WikipediaQueryRun` (via `WikipediaAPIWrapper`), and `TavilySearchResults` (web search, requires `TAVILY_API_KEY`).
+- Bound all three tools to `ChatGroq(model="qwen/qwen3.6-27b")` and inspected tool-selection behavior for arXiv IDs, general-knowledge, and current-events queries.
+- Built the same `ToolNode` + `tools_condition` graph pattern as `chainslanggraph.ipynb` (`tool_calling_node` → conditional routing → `tools` → `END`) so the agent can autonomously pick and call arXiv, Wikipedia, or Tavily based on the user's question.
+
+### `dataclassstateschema.ipynb`
+- Compared two ways of defining a graph's state schema beyond `TypedDict`: a `TypedDict` with a `Literal["cricket", "badminton"]` field (type hints only, not enforced at runtime) and a Python `@dataclass` (`DataClassState`) with the same shape.
+- Rebuilt the same play/cricket/badminton branching graph from `simplegraph.ipynb` against the dataclass schema, invoking it with a `DataClassState(...)` instance instead of a plain dict.
+
+### `pydantic.ipynb`
+- Defined a graph state as a Pydantic `BaseModel` (`class State(BaseModel): name: str`) to get runtime type validation on inputs, unlike `TypedDict`/dataclass schemas.
+- Showed a valid invocation (`graph.invoke({"name": "saran"})`) succeeding and an invalid one (`graph.invoke({"name": 123})`) raising a Pydantic validation error at the graph boundary.
+
 ## Supporting Files
 
 - **`main.py`** — Placeholder entry-point script (`uv run main.py`).
@@ -192,6 +228,7 @@ uv sync
 # GROQ_API_KEY=...
 # LANGCHAIN_API_KEY=...
 # LANGCHAIN_PROJECT=...
+# TAVILY_API_KEY=...
 
 # Run a notebook
 uv run jupyter notebook
