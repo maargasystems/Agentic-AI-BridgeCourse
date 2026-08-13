@@ -1,6 +1,6 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, and LangGraph state graphs/chatbots/tool-calling agents.
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, and common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer).
 
 ## Tech Stack
 
@@ -8,7 +8,7 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - **Package management**: [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`)
 - **Data validation**: [Pydantic](https://docs.pydantic.dev/) v2
 - **LLM orchestration**: [LangChain](https://python.langchain.com/) v1 (`langchain`, `langchain-classic`, `langchain-community`, `langchain-core`) — including `create_agent`, `langchain.agents.middleware`, and the `@tool` decorator
-- **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) — used both directly (`StateGraph`, `add_messages` reducer, `ToolNode`/`tools_condition` prebuilts, `TypedDict`/dataclass/Pydantic state schemas) and under the hood by `create_agent`/middleware for interrupts, checkpointing (`InMemorySaver`), and human-in-the-loop resumption
+- **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) — used both directly (`StateGraph`, `add_messages` reducer, `ToolNode`/`tools_condition` prebuilts, `TypedDict`/dataclass/Pydantic state schemas, ReAct-style tool loops, `MemorySaver`/`InMemorySaver` checkpointing, `.stream()`/`.astream_events()` streaming) and under the hood by `create_agent`/middleware for interrupts, checkpointing, and human-in-the-loop resumption
 - **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` / `init_chat_model` (models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama-3.1-8b-instant`, `qwen/qwen3.6-27b`)
 - **Observability / tracing**: [LangSmith](https://www.langchain.com/langsmith) via `langsmith`
 - **Embeddings**: `langchain-huggingface` + `sentence-transformers` (`BAAI/bge-small-en-v1.5`, `BAAI/bge-large-en-v1.5`)
@@ -63,13 +63,22 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   ├── modelintegration.ipynb     # Groq model integration, streaming, batching
 │   ├── structuredoutput.ipynb     # with_structured_output (Pydantic/TypedDict/dataclass)
 │   └── tools.ipynb                # @tool decorator, bind_tools, manual tool-call loop
-├── LangGraph/                      # LangGraph state graphs, chatbots, tool-calling agents
+├── LangGraph/                      # LangGraph state graphs, chatbots, tool-calling & ReAct agents
 │   ├── simplegraph.ipynb          # StateGraph basics: nodes, conditional edges, compile/invoke
 │   ├── chainslanggraph.ipynb      # Messages as state, add_messages reducer, bind_tools, ToolNode/tools_condition
 │   ├── chatbot.ipynb              # Minimal single-node chatbot graph backed by ChatGroq
 │   ├── chatbotwithmultipletools.ipynb # Chatbot wired to Arxiv, Wikipedia & Tavily search tools
 │   ├── dataclassstateschema.ipynb # State schemas via TypedDict vs. Python @dataclass
-│   └── pydantic.ipynb             # State schema validation via a Pydantic BaseModel
+│   ├── pydantic.ipynb             # State schema validation via a Pydantic BaseModel
+│   ├── ReActagents.ipynb          # ReAct agent loop (act/observe/reason) with math + search tools & MemorySaver
+│   └── streaming.ipynb            # Streaming graph output via .stream() (values/updates) and .astream_events()
+├── LangGraphWorkflow/               # Agentic workflow patterns (Anthropic "building effective agents" style)
+│   ├── prompt_chaining.ipynb      # Sequential prompts with a conditional gate/quality check between steps
+│   ├── routing.ipynb              # Structured-output classifier routes input to a specialized prompt/node
+│   ├── parallelization.ipynb      # Independent nodes fan out from START and fan into a combiner node
+│   └── evaluator.ipynb            # Generator/evaluator loop: one LLM drafts, another grades & feeds back
+├── Debugging/
+│   └── graph.py                    # Standalone tool-calling StateGraph script for debugging outside a notebook
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
 ├── analysis.md                    # Standalone repo analysis notes
 └── metrics.json                   # Session activity log
@@ -210,6 +219,42 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 ### `pydantic.ipynb`
 - Defined a graph state as a Pydantic `BaseModel` (`class State(BaseModel): name: str`) to get runtime type validation on inputs, unlike `TypedDict`/dataclass schemas.
 - Showed a valid invocation (`graph.invoke({"name": "saran"})`) succeeding and an invalid one (`graph.invoke({"name": 123})`) raising a Pydantic validation error at the graph boundary.
+
+### `ReActagents.ipynb` — ReAct Agent Architecture
+- Explained the ReAct loop: **act** (model calls a tool) → **observe** (tool output returned to the model) → **reason** (model decides whether to call another tool or answer).
+- Assembled a six-tool toolkit — `ArxivQueryRun`, `WikipediaQueryRun`, `TavilySearchResults`, and custom `add`/`multiply`/`divide` functions — bound to `ChatGroq(model="qwen/qwen3.6-27b")` via `bind_tools`.
+- Built the same `State`/`ToolNode`/`tools_condition` graph pattern as `chainslanggraph.ipynb` and ran multi-tool queries (e.g., "give me recent AI news, add 5 plus 5, then multiply by 10") that chain several tool calls before the final answer.
+- **Agent memory**: introduced `MemorySaver` as a checkpointer (`builder.compile(checkpointer=memory)`) so the graph persists state across turns keyed by `thread_id`, enabling follow-up questions like "divide that by 5?" or "can you add that with two plus two?" that reference prior results.
+
+### `streaming.ipynb` — Streaming Graph Output
+- Built a minimal single-node chatbot graph (`SuperBot`) compiled with a `MemorySaver` checkpointer.
+- Compared `.stream()` modes: `"updates"` (only the delta produced by each node) vs. `"values"` (the full graph state after each node).
+- Introduced `.astream_events(..., version="v2")` for streaming lower-level events (including token-by-token model output), as the async alternative to `.stream()` for finer-grained observability.
+
+## `LangGraphWorkflow/` — Agentic Workflow Patterns
+
+Notebooks modeling the common workflow archetypes (prompt chaining, routing, parallelization, evaluator-optimizer), each built as a small `StateGraph` over `ChatGroq(model="qwen/qwen3.6-27b")`.
+
+### `prompt_chaining.ipynb`
+- Chained sequential LLM calls — `generate_story` → `improved_story` → `polished_story` — where each node's output feeds the next node's prompt.
+- Inserted a conditional gate (`add_conditional_edges` with a `check_conflict` routing function) after the first step to short-circuit the chain when a quality check fails.
+
+### `routing.ipynb`
+- Defined a `Route` Pydantic schema (`step: Literal["poem", "story", "joke"]`) and used `with_structured_output` so the LLM classifies the input into one of several paths.
+- Used `add_conditional_edges` to dispatch to a dedicated node/prompt per route (poem vs. story vs. joke generation) instead of a single generic prompt handling every case.
+
+### `parallelization.ipynb`
+- Fanned out three independent nodes (`generate_character`, `generate_settings`, `generate_premises`) directly from `START`, each calling the LLM with an unrelated sub-prompt over the same `topic`.
+- Fanned all three back into a single `combine_elements` node that assembles their outputs into one `story_intro`, demonstrating concurrent execution for independent sub-tasks vs. the sequential chaining pattern.
+
+### `evaluator.ipynb` — Evaluator-Optimizer
+- Modeled a generator/evaluator loop: `llm_call_generator` writes a joke about a topic (optionally incorporating prior `feedback`), and `llm_call_evaluator` grades it via a structured `Feedback` schema (`grade: Literal["funny", "not funny"]`, `feedback: str`).
+- Routed with a conditional edge back to the generator when the grade is "not funny" (feeding the critique back in) and to `END` once the evaluator approves — useful when there's a clear evaluation criterion and iterative refinement improves the result.
+
+## `Debugging/graph.py`
+
+- A standalone (non-notebook) script version of the `chainslanggraph.ipynb` tool-calling pattern: a `State` TypedDict with an `add_messages`-reduced `messages` key, an `add` tool, and a `ToolNode`-based agent/tools loop.
+- Exposes `make_default_graph()` (plain LLM, no tools) and `make_alternate_graph()` (tool-calling agent) factory functions, useful for debugging/inspecting a compiled graph outside a Jupyter kernel (e.g., via `python Debugging/graph.py` or LangGraph Studio/CLI tooling that expects a `.py` graph entry point).
 
 ## Supporting Files
 
