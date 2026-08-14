@@ -1,6 +1,6 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, and common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer).
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), human-in-the-loop graph interrupts, and LangGraph-based agentic/corrective RAG.
 
 ## Tech Stack
 
@@ -76,7 +76,13 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   ├── prompt_chaining.ipynb      # Sequential prompts with a conditional gate/quality check between steps
 │   ├── routing.ipynb              # Structured-output classifier routes input to a specialized prompt/node
 │   ├── parallelization.ipynb      # Independent nodes fan out from START and fan into a combiner node
-│   └── evaluator.ipynb            # Generator/evaluator loop: one LLM drafts, another grades & feeds back
+│   ├── evaluator.ipynb            # Generator/evaluator loop: one LLM drafts, another grades & feeds back
+│   └── orchestrator-worker.ipynb  # Orchestrator plans dynamic subtasks; Send() API fans out workers, synthesizer combines results
+├── HumanInTheLoop/
+│   └── humanintheloop.ipynb       # Interrupt/resume graphs for approval, debugging & editing agent state mid-run
+├── RAGLangGraph/                    # RAG patterns built as LangGraph graphs
+│   ├── agenticrag.ipynb           # Tool-calling agent decides whether to retrieve, grades relevance, rewrites query & retries
+│   └── correctiverag.ipynb        # Retrieve → grade → (generate | rewrite + web search fallback) self-correcting RAG graph
 ├── Debugging/
 │   └── graph.py                    # Standalone tool-calling StateGraph script for debugging outside a notebook
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
@@ -233,7 +239,7 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 
 ## `LangGraphWorkflow/` — Agentic Workflow Patterns
 
-Notebooks modeling the common workflow archetypes (prompt chaining, routing, parallelization, evaluator-optimizer), each built as a small `StateGraph` over `ChatGroq(model="qwen/qwen3.6-27b")`.
+Notebooks modeling the common workflow archetypes (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), each built as a small `StateGraph` over `ChatGroq(model="qwen/qwen3.6-27b")` (orchestrator-worker uses `llama-3.1-8b-instant`).
 
 ### `prompt_chaining.ipynb`
 - Chained sequential LLM calls — `generate_story` → `improved_story` → `polished_story` — where each node's output feeds the next node's prompt.
@@ -250,6 +256,39 @@ Notebooks modeling the common workflow archetypes (prompt chaining, routing, par
 ### `evaluator.ipynb` — Evaluator-Optimizer
 - Modeled a generator/evaluator loop: `llm_call_generator` writes a joke about a topic (optionally incorporating prior `feedback`), and `llm_call_evaluator` grades it via a structured `Feedback` schema (`grade: Literal["funny", "not funny"]`, `feedback: str`).
 - Routed with a conditional edge back to the generator when the grade is "not funny" (feeding the critique back in) and to `END` once the evaluator approves — useful when there's a clear evaluation criterion and iterative refinement improves the result.
+
+### `orchestrator-worker.ipynb` — Orchestrator-Worker
+- Used for tasks where the subtasks can't be predicted up front (unlike parallelization's fixed, pre-defined nodes): a central LLM plans the subtasks, then delegates each one dynamically.
+- `orchestrator` calls `llm.with_structured_output(Sections)` to plan a report as a list of `Section(topic, description)` objects.
+- `assign_worker` uses LangGraph's `Send` API (`from langgraph.types import Send`) inside `add_conditional_edges` to fan out one `llm_call` worker per planned section at runtime, each with its own `worker_state`.
+- Each `llm_call` worker writes one report section; all worker outputs accumulate into a shared `completed_sections` key via the `operator.add` reducer (`Annotated[List, operator.add]`).
+- `synthesizer` joins the completed sections into a single `final_report` string, rendered as Markdown.
+
+## `HumanInTheLoop/humanintheloop.ipynb` — Interrupts & State Editing
+
+- Covered three human-in-the-loop motivations: **approval** (pause and let a user accept an action), **debugging** (rewind the graph to reproduce/avoid issues), and **editing** (modify state mid-run).
+- Built an arithmetic assistant (`add`/`multiply`/`divide` tools bound to `ChatGroq`) as a `MessagesState` graph with `ToolNode`/`tools_condition`, compiled with `interrupt_before=["assistant"]` and a `MemorySaver` checkpointer.
+- Used `graph.stream(initial_input, thread, stream_mode="values")` followed by `graph.stream(None, thread, ...)` to pause before the `assistant` node and then resume execution from the checkpoint.
+- Inspected paused state via `graph.get_state(thread)` / `state.next` to see which node is queued to run next.
+- **Editing feedback**: called `graph.update_state(thread, {"messages": [...]})` to inject a corrected human message (e.g., change "multiply 2 and 3" to "multiply 15 and 6") into the checkpointed state before resuming.
+- **Waiting for user input**: added a no-op `human_feedback` node before `assistant` with `interrupt_before=["human_feedback"]`, then resumed with `graph.update_state(thread, {"messages": user_input}, as_node="human_feedback")` to inject fresh input captured via `input(...)` and continue the run.
+
+## `RAGLangGraph/` — RAG as LangGraph Graphs
+
+### `agenticrag.ipynb` — Agentic RAG
+- Built two separate `FAISS` retriever tools via `create_retriever_tool` — `search_documents` and `retriever_vector_langchain_blog` — each backed by its own `WebBaseLoader` → `RecursiveCharacterTextSplitter` → `HuggingFaceEmbeddings` pipeline, and bound both to a `ChatGroq(model="openai/gpt-oss-120b")` agent.
+- `agent` node: the tool-bound LLM decides whether to call a retriever tool or answer directly, based on `AgentState.messages` (`Annotated[Sequence[BaseMessage], add_messages]`).
+- `grade_documents` conditional edge (`Literal["generate", "rewrite"]`): grades the retrieved tool output for relevance to the question and routes to `generate` or `rewrite`.
+- `rewrite` node: reformulates the question to better capture semantic intent when retrieved documents were graded irrelevant, looping back through the agent.
+- `generate` node: pulls the `rlm/rag-prompt` from the LangSmith prompt hub and answers using the retrieved context via `prompt | llm | StrOutputParser()`.
+- Assembled with `StateGraph` + `ToolNode([retriever_tool, retriever_tool_langchain])` + `tools_condition`, tested against LangGraph/LangChain/off-topic ("What is Machine learning?") questions to show routing behavior.
+
+### `correctiverag.ipynb` — Corrective RAG (CRAG)
+- Indexed LangChain docs into a `FAISS` store (`HuggingFaceEmbeddings`, `BAAI/bge-small-en-v1.5`) and defined a `GraphState` (`question`, `generation`, `web_search`, `documents`).
+- `retrieve` → `grade_documents`: a `GradeDocuments` structured-output grader (`ChatGroq(model="openai/gpt-oss-120b")`) scores each retrieved doc as relevant (`binary_score: "yes"/"no"`); any irrelevant doc flips a `web_search` flag.
+- `decide_to_generate` conditional edge routes to `generate` when all docs are relevant, or to `transform_query` (a `question_rewriter` chain optimizing the query for web search) when any are not.
+- `web_search` node falls back to `TavilySearchResults` to fetch supplementary documents before generation when local retrieval was graded insufficient.
+- `generate` node answers via `rag_chain = prompt | llm | StrOutputParser()` (LangSmith `rlm/rag-prompt`) over the final (possibly web-augmented) document set — self-correcting the retrieval step instead of trusting it outright, unlike the plain RAG pipelines in `LangChainRAG/`.
 
 ## `Debugging/graph.py`
 
