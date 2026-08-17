@@ -1,6 +1,6 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), human-in-the-loop graph interrupts, and LangGraph-based agentic/corrective RAG.
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), human-in-the-loop graph interrupts, and LangGraph-based agentic/corrective/adaptive RAG.
 
 ## Tech Stack
 
@@ -82,7 +82,8 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   └── humanintheloop.ipynb       # Interrupt/resume graphs for approval, debugging & editing agent state mid-run
 ├── RAGLangGraph/                    # RAG patterns built as LangGraph graphs
 │   ├── agenticrag.ipynb           # Tool-calling agent decides whether to retrieve, grades relevance, rewrites query & retries
-│   └── correctiverag.ipynb        # Retrieve → grade → (generate | rewrite + web search fallback) self-correcting RAG graph
+│   ├── correctiverag.ipynb        # Retrieve → grade → (generate | rewrite + web search fallback) self-correcting RAG graph
+│   └── adaptiverag.ipynb          # Routes each question to vectorstore or web search, grades docs, hallucinations & answers
 ├── Debugging/
 │   └── graph.py                    # Standalone tool-calling StateGraph script for debugging outside a notebook
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
@@ -289,6 +290,14 @@ Notebooks modeling the common workflow archetypes (prompt chaining, routing, par
 - `decide_to_generate` conditional edge routes to `generate` when all docs are relevant, or to `transform_query` (a `question_rewriter` chain optimizing the query for web search) when any are not.
 - `web_search` node falls back to `TavilySearchResults` to fetch supplementary documents before generation when local retrieval was graded insufficient.
 - `generate` node answers via `rag_chain = prompt | llm | StrOutputParser()` (LangSmith `rlm/rag-prompt`) over the final (possibly web-augmented) document set — self-correcting the retrieval step instead of trusting it outright, unlike the plain RAG pipelines in `LangChainRAG/`.
+
+### `adaptiverag.ipynb` — Adaptive RAG
+- Combined **query routing** with corrective self-checks: each question is first routed to the best retrieval strategy, then the pipeline grades its own retrieval and generation before returning an answer.
+- Indexed the LangChain tutorials page (`WebBaseLoader` → `RecursiveCharacterTextSplitter` with `chunk_size=500`/`chunk_overlap=50` → `FAISS` + `HuggingFaceEmbeddings`).
+- **Router**: a `RouteQuery` structured-output chain on `ChatGroq(model="openai/gpt-oss-120b")` (`datasource: Literal["vectorstore", "websearch"]`) sends in-domain questions to the vector store and everything else to web search (`TavilySearchResults(max_results=3)`).
+- **Three binary graders** built with `with_structured_output`: `GradeDocuments` (is each retrieved doc relevant?), `GradeHallucinations` (is the generation grounded in the docs?), and an answer grader (does the generation address the question?), plus a question re-writer chain that reformulates queries for better retrieval.
+- Defined a `GraphState` TypedDict (`question`, `generation`, `documents`, `loop_count`) with a `MAX_RETRIES = 3` cap on rewrite/generate loops.
+- **Graph wiring**: `START` conditionally routes (`route_question`) to `web_search` or `retrieve`; `retrieve` → `grade_documents` → `decide_to_generate` picks `generate` or `transform_query` (which loops back to `retrieve`); after `generate`, `grade_generation_v_documents_and_question` routes "not supported" back to `generate`, "not useful" to `transform_query`, and "useful" to `END` — answers via the LangSmith `rlm/rag-prompt` RAG chain.
 
 ## `Debugging/graph.py`
 
