@@ -1,6 +1,6 @@
 # Agentic AI Bridge Course
 
-Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), human-in-the-loop graph interrupts, and LangGraph-based agentic/corrective/adaptive RAG.
+Notes and hands-on exercises from the Agentic AI bridge course, covering Pydantic data validation, LangChain fundamentals, retrieval-augmented generation (RAG), LangChain Expression Language (LCEL), conversational memory, LangChain v1 agents/tools/middleware, LangGraph state graphs/chatbots/tool-calling/ReAct agents, common agentic workflow patterns (prompt chaining, routing, parallelization, evaluator-optimizer, orchestrator-worker), human-in-the-loop graph interrupts, LangGraph-based agentic/corrective/adaptive RAG, agent guardrails via LangChain middleware, and building an LLM gateway with LiteLLM.
 
 ## Tech Stack
 
@@ -9,7 +9,9 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 - **Data validation**: [Pydantic](https://docs.pydantic.dev/) v2
 - **LLM orchestration**: [LangChain](https://python.langchain.com/) v1 (`langchain`, `langchain-classic`, `langchain-community`, `langchain-core`) — including `create_agent`, `langchain.agents.middleware`, and the `@tool` decorator
 - **Agent runtime**: [LangGraph](https://langchain-ai.github.io/langgraph/) — used both directly (`StateGraph`, `add_messages` reducer, `ToolNode`/`tools_condition` prebuilts, `TypedDict`/dataclass/Pydantic state schemas, ReAct-style tool loops, `MemorySaver`/`InMemorySaver` checkpointing, `.stream()`/`.astream_events()` streaming) and under the hood by `create_agent`/middleware for interrupts, checkpointing, and human-in-the-loop resumption
-- **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` / `init_chat_model` (models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama-3.1-8b-instant`, `qwen/qwen3.6-27b`)
+- **LLM providers**: [Groq](https://groq.com/) via `langchain-groq` / `init_chat_model` (models: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `llama-3.1-8b-instant`, `qwen/qwen3.6-27b`); the gateway notebook additionally calls OpenAI (`gpt-4o`, `gpt-4o-mini`), Anthropic (`claude-3-5-haiku`/`claude-3-5-sonnet`), Google Gemini (`gemini-1.5-flash`) and Groq (`llama-3.3-70b-versatile`) through LiteLLM
+- **Guardrails**: `langchain.agents.middleware` — built-in `PIIMiddleware` and `HumanInTheLoopMiddleware`, plus custom `AgentMiddleware` subclasses using the `before_agent`/`after_agent` hooks with `@hook_config(can_jump_to=[...])`
+- **LLM gateway**: [LiteLLM](https://docs.litellm.ai/) (`litellm` — `completion`, `Router`, `Cache`, `completion_cost`, success/failure/input callbacks) and `ChatLiteLLM` from `langchain-litellm` — both installed in-notebook via `!pip install` under `LLM_Gateway/`, not tracked in `pyproject.toml`
 - **Observability / tracing**: [LangSmith](https://www.langchain.com/langsmith) via `langsmith`
 - **Embeddings**: `langchain-huggingface` + `sentence-transformers` (`BAAI/bge-small-en-v1.5`, `BAAI/bge-large-en-v1.5`)
 - **Vector stores**: [FAISS](https://faiss.ai/) (`faiss-cpu`) and [Chroma](https://www.trychroma.com/) (`chromadb`, `langchain-chroma`)
@@ -84,6 +86,10 @@ Notes and hands-on exercises from the Agentic AI bridge course, covering Pydanti
 │   ├── agenticrag.ipynb           # Tool-calling agent decides whether to retrieve, grades relevance, rewrites query & retries
 │   ├── correctiverag.ipynb        # Retrieve → grade → (generate | rewrite + web search fallback) self-correcting RAG graph
 │   └── adaptiverag.ipynb          # Routes each question to vectorstore or web search, grades docs, hallucinations & answers
+├── Guardrails/
+│   └── langchain_guardrails.ipynb # Agent guardrails as middleware: PII, human approval, custom before/after hooks, layered stack
+├── LLM_Gateway/
+│   └── llm_gateway_tutorial.ipynb # LiteLLM gateway: unified API, fallbacks, caching, routing, cost tracking, callback guardrails
 ├── Debugging/
 │   └── graph.py                    # Standalone tool-calling StateGraph script for debugging outside a notebook
 ├── pyproject.toml / uv.lock        # Project dependencies (managed via uv)
@@ -299,6 +305,36 @@ Notebooks modeling the common workflow archetypes (prompt chaining, routing, par
 - Defined a `GraphState` TypedDict (`question`, `generation`, `documents`, `loop_count`) with a `MAX_RETRIES = 3` cap on rewrite/generate loops.
 - **Graph wiring**: `START` conditionally routes (`route_question`) to `web_search` or `retrieve`; `retrieve` → `grade_documents` → `decide_to_generate` picks `generate` or `transform_query` (which loops back to `retrieve`); after `generate`, `grade_generation_v_documents_and_question` routes "not supported" back to `generate`, "not useful" to `transform_query`, and "useful" to `END` — answers via the LangSmith `rlm/rag-prompt` RAG chain.
 
+## `Guardrails/langchain_guardrails.ipynb` — Agent Guardrails via Middleware
+
+Safety/compliance guardrails on `create_agent` agents through the LangChain middleware system ([docs](https://docs.langchain.com/oss/python/langchain/guardrails)).
+
+- Framed guardrails as **middleware that intercepts execution** — before the agent starts (input guardrails), after it completes (output guardrails), and around model/tool calls — covering PII leakage, prompt injection, harmful content, business-rule approval, and output-quality validation.
+- Contrasted **deterministic** guardrails (regex/keyword rules — fast, predictable, cheap, but miss nuance) with **model-based** guardrails (an LLM judges safety — catches subtlety, slower and costlier), implementing a minimal version of each: a banned-keyword `deterministic_guardrail` and an `openai/gpt-oss-20b` safety classifier.
+- **Built-in `PIIMiddleware`**: attached per-type strategies to one agent — `redact` for `email`, `mask` for `credit_card`, and a custom `detector=r"sk-[a-zA-Z0-9]{32}"` API-key rule with `strategy="block"` (raises an exception) — applied via `apply_to_input`/`apply_to_output`.
+- **Built-in `HumanInTheLoopMiddleware`**: gated `send_email`/`delete_records` tools behind approval with `interrupt_on={...}` and an `InMemorySaver` checkpointer (required for state persistence across interrupts), then resumed via `Command(resume={"decisions": [{"type": "approve"}]})` and the rejection path (`{"type": "reject", "reason": ...}`).
+- **Custom `before_agent` hook** — `ContentFilterMiddleware(AgentMiddleware)`, decorated with `@hook_config(can_jump_to=["end"])`, inspects the first human message for banned keywords and returns `{"messages": [...], "jump_to": "end"}`, blocking bad input at zero LLM cost.
+- **Custom `after_agent` hook** — `SafetyGuardrailMiddleware` sends the final `AIMessage` to a cheap `ChatGroq` safety classifier and replaces the content with a fallback message when flagged `UNSAFE`, before the user ever sees it.
+- **Layered guardrails**: stacked five middlewares in execution order on one `production_agent` — content filter → input PII masking → human approval for sensitive tools → output PII redaction → model-based output safety — as defense in depth, with cheap deterministic checks first and expensive model-based ones last.
+- **Real-world case study — healthcare chatbot**: `search_symptoms`/`book_appointment`/`get_medication_info` tools wrapped in a full stack — `HealthcareSafetyFilter` (blocks off-topic/harmful topics and returns a crisis-line message), email/credit-card PII redaction on input, HITL approval scoped to `book_appointment` only, and a `MedicalOutputValidator` that appends a "not medical advice" disclaimer to every answer.
+
+## `LLM_Gateway/llm_gateway_tutorial.ipynb` — LLM Gateway with LiteLLM
+
+A production-style gateway sitting between the app and many LLM providers. Installs its own extras in-notebook (`litellm`, `langchain-litellm`) and needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and a Gemini key in addition to `GROQ_API_KEY`.
+
+- Motivated the pattern against the no-gateway pain points: a different SDK per provider, no fallback when one provider goes down, no central cost tracking, model swaps requiring code rewrites, and paying repeatedly for identical queries.
+- **Unified API**: a single `litellm.completion(model=..., messages=[...])` call driving OpenAI (`gpt-4o-mini`), Groq (`groq/llama-3.3-70b-versatile`), Anthropic (`claude-3-5-haiku-20241022`) and Gemini (`gemini/gemini-1.5-flash`) — the provider changes by string alone.
+- **Automatic fallbacks**: `completion(..., fallbacks=[...])` chains a primary model to backups; verified by pointing the primary at a deliberately fake model name and reading back which model actually answered via `response.model`.
+- **Cost tracking**: `completion_cost(completion_response=response)` plus `response.usage` for the exact per-call USD cost alongside input/output token counts.
+- **Caching**: enabled `litellm.cache = Cache(type="local")` with `caching=True`, timing a cold API call against the cache hit to show the speedup and zero marginal cost (Redis noted as the production choice).
+- **Smart routing**: `Router(model_list=[...])` maps abstract aliases (`fast-cheap`, `smart-coding`, `balanced`) onto concrete provider deployments, so application code never names a provider and swapping one is a config change.
+- **Load balancing & routing strategies**: registered several deployments under one alias with `model_info={"id": ...}` and compared `simple-shuffle`, `least-busy` and `latency-based-routing`, reading the chosen deployment back from `response._hidden_params["model_id"]` and `response._response_ms`.
+- **Observability**: registered `litellm.success_callback` / `failure_callback` handlers to build a per-call audit log (model, prompt, token counts, latency, `response_cost`, `user` tag) for chargeback, debugging and security review.
+- **LangChain integration**: dropped `ChatLiteLLM` into a standard LCEL chain (`prompt | llm | StrOutputParser()`), then hardened it with LangChain's own `.with_fallbacks([...])` across LiteLLM-backed models — the whole chain retargets to another provider with one string change.
+- **End-to-end demo**: a task-aware `smart_chat` that classifies each query as `code`/`summary`/`general` with a cheap fast model, routes to a per-task model chain, walks down the chain on failure, and reports the model used, latency and cost.
+- **Gateway-level guardrails in pure Python**: `litellm.input_callback` hooks that redact PII by regex (email, Indian mobile/PAN/Aadhaar, US SSN/phone, credit card, IP) before the prompt leaves the machine, block prompt-injection/jailbreak patterns, and refuse forbidden topics by raising a `GuardrailViolation` — complementing the middleware guardrails in `Guardrails/`, which sit inside the agent rather than at the provider boundary.
+- Closed with production hardening (Redis caching, per-user rate limits, master key + virtual keys per team, pinned model versions, timeouts and `num_retries`, per-deployment health checks, `config.yaml` in Git) and a comparison of LiteLLM against Portkey, Helicone, Cloudflare AI Gateway, Kong AI Gateway and OpenRouter.
+
 ## `Debugging/graph.py`
 
 - A standalone (non-notebook) script version of the `chainslanggraph.ipynb` tool-calling pattern: a `State` TypedDict with an `add_messages`-reduced `messages` key, an `add` tool, and a `ToolNode`-based agent/tools loop.
@@ -322,6 +358,11 @@ uv sync
 # LANGCHAIN_API_KEY=...
 # LANGCHAIN_PROJECT=...
 # TAVILY_API_KEY=...
+#
+# Optional — only for LLM_Gateway/llm_gateway_tutorial.ipynb:
+# OPENAI_API_KEY=...
+# ANTHROPIC_API_KEY=...
+# GEMINI_API_KEY=...
 
 # Run a notebook
 uv run jupyter notebook
